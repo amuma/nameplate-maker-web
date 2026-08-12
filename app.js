@@ -201,12 +201,6 @@ const PDF_BADGE_H_MM = 45;
 const PDF_BADGE_W_PX = Math.round((PDF_BADGE_W_MM / 25.4) * PDF_DPI);
 const PDF_BADGE_H_PX = Math.round(PDF_BADGE_W_PX * PDF_BADGE_H_MM / PDF_BADGE_W_MM);
 
-function waitForTwoFrames() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(resolve));
-  });
-}
-
 function loadImageForPdf(src) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -233,19 +227,31 @@ function canvasToBytes(canvas, type, quality) {
   });
 }
 
-// 背景は名札ごとに再描画せず、300dpi相当に一度だけ中央トリミングする。
-// PDF内では同じ画像エイリアスを再利用するため、12枚でも背景データは1個だけになる。
-async function preparePdfBackground() {
-  const image = await loadImageForPdf(state.backgroundDataUrl);
+function createOpaqueCanvas(width, height) {
   const canvas = document.createElement("canvas");
-  canvas.width = PDF_BADGE_W_PX;
-  canvas.height = PDF_BADGE_H_PX;
-
-  const context = canvas.getContext("2d", { alpha: false });
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", {
+    alpha: false,
+    colorSpace: "srgb",
+  });
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = 1;
   context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillRect(0, 0, width, height);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
+  return { canvas, context };
+}
+
+// 背景はsRGBの不透明Canvasへ一度だけ中央トリミングする。
+// JPEG品質98%で保存し、PDF内では同じ画像を全名札で再利用する。
+async function preparePdfBackground() {
+  const image = await loadImageForPdf(state.backgroundDataUrl);
+  const { canvas, context } = createOpaqueCanvas(
+    PDF_BADGE_W_PX,
+    PDF_BADGE_H_PX
+  );
 
   const targetRatio = PDF_BADGE_W_MM / PDF_BADGE_H_MM;
   const sourceRatio = image.naturalWidth / image.naturalHeight;
@@ -274,43 +280,13 @@ async function preparePdfBackground() {
     canvas.height
   );
 
-  const keepPng = state.backgroundDataUrl.startsWith("data:image/png");
-  const mimeType = keepPng ? "image/png" : "image/jpeg";
-  const format = keepPng ? "PNG" : "JPEG";
-  const bytes = await canvasToBytes(canvas, mimeType, keepPng ? undefined : 0.96);
-
-  canvas.width = 1;
-  canvas.height = 1;
-  return { bytes, format };
+  return {
+    canvas,
+    bytes: await canvasToBytes(canvas, "image/jpeg", 0.98),
+  };
 }
 
-// html2canvasには背景を含めず、黒帯と名前だけを透明PNGとして描画する。
-// 文字をJPEG化しないため、輪郭のにじみや白い圧縮ノイズが出ない。
-function createPdfOverlay(name) {
-  const surface = document.createElement("div");
-  surface.style.position = "relative";
-  surface.style.width = PDF_BADGE_W_PX + "px";
-  surface.style.height = PDF_BADGE_H_PX + "px";
-  surface.style.overflow = "hidden";
-  surface.style.background = "transparent";
-
-  const box = document.createElement("div");
-  box.className = "name-box";
-  box.style.backgroundColor = "rgba(0, 0, 0, " + el.overlayOpacity.value + ")";
-  box.style.borderRadius = "21px";
-
-  const nameEl = document.createElement("div");
-  nameEl.className = "name";
-  nameEl.textContent = name;
-  nameEl.style.fontFamily = selectedFontFor(name);
-  nameEl.style.color = el.nameColor.value;
-
-  box.appendChild(nameEl);
-  surface.appendChild(box);
-  return surface;
-}
-
-function splitPdfNameIntoTwoLines(text, nameEl) {
+function splitPdfNameIntoTwoLines(text, context, fontFamily) {
   const trimmed = text.trim();
   let segments;
   let separator = "";
@@ -327,12 +303,9 @@ function splitPdfNameIntoTwoLines(text, nameEl) {
 
   if (segments.length < 2) return [trimmed, ""];
 
-  const style = getComputedStyle(nameEl);
-  const measureCanvas = document.createElement("canvas");
-  const context = measureCanvas.getContext("2d");
-  context.font = style.fontWeight + " 40px " + style.fontFamily;
-
+  context.font = "900 40px " + fontFamily;
   let best = null;
+
   for (let index = 1; index < segments.length; index++) {
     const first = segments.slice(0, index).join(separator);
     const second = segments.slice(index).join(separator);
@@ -349,78 +322,113 @@ function splitPdfNameIntoTwoLines(text, nameEl) {
   return [best.first, best.second];
 }
 
-// 1行を優先して縮小し、最小サイズでも収まらない場合だけ2行へ分割する。
-// CSSの自動折り返し任せにせず、各行の実幅を確認して横方向の欠けを防ぐ。
-function fitPdfName(nameEl) {
-  const name = nameEl.textContent.trim();
-  const box = nameEl.parentElement;
-  const maxWidth = box.clientWidth * 0.90;
-  const maxHeight = PDF_BADGE_H_PX * 0.34;
-
-  nameEl.classList.remove("multiline");
-  nameEl.replaceChildren(document.createTextNode(name));
-  nameEl.style.display = "block";
-  nameEl.style.overflow = "hidden";
-  nameEl.style.whiteSpace = "nowrap";
-
+function fitPdfName(context, name, fontFamily, maxWidth, maxHeight) {
   for (let size = 97; size >= 40; size -= 2) {
-    nameEl.style.fontSize = size + "px";
-    if (nameEl.scrollWidth <= maxWidth + 0.5) return;
+    context.font = "900 " + size + "px " + fontFamily;
+    if (context.measureText(name).width <= maxWidth) {
+      return { lines: [name], size };
+    }
   }
 
-  const lines = splitPdfNameIntoTwoLines(name, nameEl);
-  const lineElements = lines.map((line) => {
-    const span = document.createElement("span");
-    span.textContent = line;
-    span.style.display = "block";
-    span.style.maxWidth = "100%";
-    span.style.whiteSpace = "nowrap";
-    return span;
-  });
-
-  nameEl.replaceChildren(...lineElements);
-  nameEl.style.display = "flex";
-  nameEl.style.flexDirection = "column";
-  nameEl.style.alignItems = "center";
-  nameEl.style.justifyContent = "center";
-  nameEl.style.overflow = "visible";
-  nameEl.style.whiteSpace = "normal";
-
+  const lines = splitPdfNameIntoTwoLines(name, context, fontFamily);
   for (let size = 64; size >= 28; size -= 1) {
-    nameEl.style.fontSize = size + "px";
-    const widthFits = lineElements.every(
-      (line) => line.scrollWidth <= maxWidth + 0.5
+    context.font = "900 " + size + "px " + fontFamily;
+    const lineHeight = size * 1.08;
+    const widthFits = lines.every(
+      (line) => context.measureText(line).width <= maxWidth
     );
-    if (widthFits && nameEl.scrollHeight <= maxHeight) return;
+    if (widthFits && lineHeight * lines.length <= maxHeight) {
+      return { lines, size };
+    }
   }
+
+  return { lines, size: 28 };
 }
 
-async function renderPdfOverlay(name) {
-  const surface = createPdfOverlay(name);
-  el.renderArea.replaceChildren(surface);
-  await waitForTwoFrames();
+function roundedRectPath(context, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(
+    x + width,
+    y + height,
+    x + width - safeRadius,
+    y + height
+  );
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+}
 
-  const nameEl = surface.querySelector(".name");
-  fitPdfName(nameEl);
+// 透明PNGやPDF透明マスクを使わず、背景の該当部分・黒帯・文字を
+// 小さな不透明JPEGパッチへ合成する。白ボケの原因となる透明度合成を残さない。
+async function renderPdfNamePatch(baseCanvas, name) {
+  const patchX = Math.round(PDF_BADGE_W_PX * 0.05);
+  const patchW = PDF_BADGE_W_PX - patchX * 2;
+  const patchH = Math.round(PDF_BADGE_H_PX * 0.38);
+  const patchY = Math.round((PDF_BADGE_H_PX - patchH) / 2);
+  const { canvas, context } = createOpaqueCanvas(patchW, patchH);
 
-  const canvas = await html2canvas(surface, {
-    backgroundColor: null,
-    scale: 1,
-    width: PDF_BADGE_W_PX,
-    height: PDF_BADGE_H_PX,
-    useCORS: false,
-    allowTaint: false,
-    logging: false,
-    removeContainer: true,
+  context.drawImage(
+    baseCanvas,
+    patchX,
+    patchY,
+    patchW,
+    patchH,
+    0,
+    0,
+    patchW,
+    patchH
+  );
+
+  roundedRectPath(context, 0, 0, patchW, patchH, 21);
+  context.fillStyle =
+    "rgba(0, 0, 0, " + Number(el.overlayOpacity.value) + ")";
+  context.fill();
+
+  const fontFamily = selectedFontFor(name);
+  const fitted = fitPdfName(
+    context,
+    name,
+    fontFamily,
+    patchW * 0.90,
+    patchH * 0.82
+  );
+
+  context.font = "900 " + fitted.size + "px " + fontFamily;
+  context.fillStyle = el.nameColor.value;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+
+  const lineHeight = fitted.size * 1.08;
+  const firstY =
+    patchH / 2 - ((fitted.lines.length - 1) * lineHeight) / 2;
+  fitted.lines.forEach((line, lineIndex) => {
+    context.fillText(
+      line,
+      patchW / 2,
+      firstY + lineIndex * lineHeight,
+      patchW * 0.90
+    );
   });
 
-  const bytes = await canvasToBytes(canvas, "image/png");
+  const bytes = await canvasToBytes(canvas, "image/jpeg", 0.98);
   canvas.width = 1;
   canvas.height = 1;
-  surface.remove();
-  return bytes;
-}
 
+  return {
+    bytes,
+    xRatio: patchX / PDF_BADGE_W_PX,
+    yRatio: patchY / PDF_BADGE_H_PX,
+    widthRatio: patchW / PDF_BADGE_W_PX,
+    heightRatio: patchH / PDF_BADGE_H_PX,
+  };
+}
 function drawCutGuides(pdf, metrics) {
   const totalPages = pdf.getNumberOfPages();
   const guideLength = 8;
@@ -463,7 +471,7 @@ async function exportPdf() {
   try {
     await document.fonts.ready;
 
-    if (!window.html2canvas || !window.jspdf?.jsPDF) {
+    if (!window.jspdf?.jsPDF) {
       throw new Error("PDF生成ライブラリを読み込めませんでした。ページを再読み込みしてください。");
     }
 
@@ -504,7 +512,7 @@ async function exportPdf() {
       // 同じaliasを指定することで、背景はPDF内に一度だけ埋め込まれる。
       pdf.addImage(
         background.bytes,
-        background.format,
+        "JPEG",
         x,
         y,
         metrics.badgeW,
@@ -513,15 +521,18 @@ async function exportPdf() {
         "FAST"
       );
 
-      const overlayBytes = await renderPdfOverlay(state.names[index]);
+      const namePatch = await renderPdfNamePatch(
+        background.canvas,
+        state.names[index]
+      );
       pdf.addImage(
-        overlayBytes,
-        "PNG",
-        x,
-        y,
-        metrics.badgeW,
-        metrics.badgeH,
-        "badge-overlay-" + index,
+        namePatch.bytes,
+        "JPEG",
+        x + metrics.badgeW * namePatch.xRatio,
+        y + metrics.badgeH * namePatch.yRatio,
+        metrics.badgeW * namePatch.widthRatio,
+        metrics.badgeH * namePatch.heightRatio,
+        "badge-name-patch-" + index,
         "FAST"
       );
 
@@ -533,6 +544,8 @@ async function exportPdf() {
     }
 
     drawCutGuides(pdf, metrics);
+    background.canvas.width = 1;
+    background.canvas.height = 1;
     el.renderArea.replaceChildren();
 
     pdf.setProperties({
@@ -542,7 +555,7 @@ async function exportPdf() {
     });
     pdf.save("name-badges-a4-print.pdf");
     setStatus(
-      "PDFを出力しました。背景は再利用し、文字は可逆圧縮PNGで鮮明に保持しています。",
+      "PDFを出力しました。透明レイヤーを使わず、不透明画像として合成しています。",
       "success"
     );
   } catch (error) {
