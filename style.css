@@ -16,11 +16,16 @@ body { margin: 0; min-height: 100vh; }
 h2 { margin: 0 0 18px; font-size: 20px; }
 .field { display: grid; gap: 8px; margin-bottom: 18px; font-size: 14px; font-weight: 700; }
 .field small { color: #6b7280; font-size: 12px; line-height: 1.6; font-weight: 400; }
-input[type="file"], select { width: 100%; border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; background: #fff; font: inherit; }
+input[type="file"], input[type="number"], select { width: 100%; border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; background: #fff; font: inherit; }
 input[type="color"] { width: 100%; min-height: 42px; border: 1px solid #d1d5db; border-radius: 10px; padding: 4px; background: #fff; }
 .two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .range-row { display: grid; grid-template-columns: 1fr 52px; gap: 10px; align-items: center; }
 .range-row output { font-size: 13px; text-align: right; font-weight: 600; }
+.size-settings { margin: 2px 0 18px; padding: 14px; border: 1px solid #dbe3ee; border-radius: 12px; background: #f8fafc; }
+.size-settings-title { display: block; margin-bottom: 12px; font-size: 14px; font-weight: 800; }
+.size-settings .field { margin-bottom: 8px; }
+.size-settings small { display: block; color: #4b5563; font-size: 12px; line-height: 1.6; }
+.size-settings small.error-text { color: #b91c1c; font-weight: 700; }
 .actions { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
 button { border: 0; border-radius: 11px; padding: 12px 15px; font: inherit; font-weight: 800; cursor: pointer; }
 button:disabled { opacity: .45; cursor: not-allowed; }

@@ -11,6 +11,9 @@ const el = {
   nameColor: document.getElementById("nameColor"),
   overlayOpacity: document.getElementById("overlayOpacity"),
   opacityValue: document.getElementById("opacityValue"),
+  badgeWidth: document.getElementById("badgeWidth"),
+  badgeHeight: document.getElementById("badgeHeight"),
+  layoutSummary: document.getElementById("layoutSummary"),
   pdfButton: document.getElementById("pdfButton"),
   clearButton: document.getElementById("clearButton"),
   previewGrid: document.getElementById("previewGrid"),
@@ -92,6 +95,13 @@ function handleBackground(file) {
 function createBadge(name, forRender = false) {
   const badge = document.createElement("div");
   badge.className = "badge";
+
+  try {
+    const metrics = getPrintMetrics();
+    badge.style.aspectRatio = `${metrics.badgeW} / ${metrics.badgeH}`;
+  } catch (_) {
+    badge.style.aspectRatio = "16 / 9";
+  }
 
   if (state.backgroundDataUrl) {
     badge.style.backgroundImage = `url("${state.backgroundDataUrl}")`;
@@ -177,10 +187,14 @@ function renderPreview() {
 }
 
 function updateReadyState() {
-  const ready = state.names.length > 0 && Boolean(state.backgroundDataUrl);
+  const sizeReady = updateSizeSettings();
+  const ready =
+    state.names.length > 0 && Boolean(state.backgroundDataUrl) && sizeReady;
   el.pdfButton.disabled = !ready;
 
-  if (ready) {
+  if (!sizeReady) {
+    setStatus("印刷サイズを確認してください。", "error");
+  } else if (ready) {
     setStatus(`${state.names.length}名分の名札を作成できます。長い名前は自動縮小し、収まらない場合は2行表示します。`, "success");
   } else if (state.names.length > 0) {
     setStatus("CSVを読み込みました。続いて背景画像を選択してください。");
@@ -196,10 +210,62 @@ function refreshStyles() {
 }
 
 const PDF_DPI = 300;
-const PDF_BADGE_W_MM = 80;
-const PDF_BADGE_H_MM = 45;
-const PDF_BADGE_W_PX = Math.round((PDF_BADGE_W_MM / 25.4) * PDF_DPI);
-const PDF_BADGE_H_PX = Math.round(PDF_BADGE_W_PX * PDF_BADGE_H_MM / PDF_BADGE_W_MM);
+const A4_WIDTH_MM = 210;
+const A4_HEIGHT_MM = 297;
+const GUIDE_LENGTH_MM = 8;
+
+function getPrintMetrics() {
+  const badgeW = Number(el.badgeWidth.value);
+  const badgeH = Number(el.badgeHeight.value);
+
+  if (!Number.isFinite(badgeW) || badgeW < 20 || badgeW > 194) {
+    throw new Error("横幅は20mm以上194mm以下で指定してください。");
+  }
+  if (!Number.isFinite(badgeH) || badgeH < 20 || badgeH > 281) {
+    throw new Error("縦幅は20mm以上281mm以下で指定してください。");
+  }
+
+  // 裁断ガイド8mmを用紙内に残したうえで、隙間0mmの最大配置数を求める。
+  const cols = Math.max(
+    1,
+    Math.floor((A4_WIDTH_MM - GUIDE_LENGTH_MM * 2) / badgeW)
+  );
+  const rows = Math.max(
+    1,
+    Math.floor((A4_HEIGHT_MM - GUIDE_LENGTH_MM * 2) / badgeH)
+  );
+  const usedW = cols * badgeW;
+  const usedH = rows * badgeH;
+
+  return {
+    badgeW,
+    badgeH,
+    badgeWPx: Math.max(1, Math.round((badgeW / 25.4) * PDF_DPI)),
+    badgeHPx: Math.max(1, Math.round((badgeH / 25.4) * PDF_DPI)),
+    cols,
+    rows,
+    perPage: cols * rows,
+    usedW,
+    usedH,
+    marginX: (A4_WIDTH_MM - usedW) / 2,
+    marginY: (A4_HEIGHT_MM - usedH) / 2,
+  };
+}
+
+function updateSizeSettings() {
+  try {
+    const metrics = getPrintMetrics();
+    el.layoutSummary.textContent =
+      `A4縦に${metrics.cols}列 × ${metrics.rows}行` +
+      `（最大${metrics.perPage}枚）で配置します。`;
+    el.layoutSummary.classList.remove("error-text");
+    return true;
+  } catch (error) {
+    el.layoutSummary.textContent = error.message;
+    el.layoutSummary.classList.add("error-text");
+    return false;
+  }
+}
 
 function loadImageForPdf(src) {
   return new Promise((resolve, reject) => {
@@ -246,14 +312,14 @@ function createOpaqueCanvas(width, height) {
 
 // 背景はsRGBの不透明Canvasへ一度だけ中央トリミングする。
 // JPEG品質98%で保存し、PDF内では同じ画像を全名札で再利用する。
-async function preparePdfBackground() {
+async function preparePdfBackground(metrics) {
   const image = await loadImageForPdf(state.backgroundDataUrl);
   const { canvas, context } = createOpaqueCanvas(
-    PDF_BADGE_W_PX,
-    PDF_BADGE_H_PX
+    metrics.badgeWPx,
+    metrics.badgeHPx
   );
 
-  const targetRatio = PDF_BADGE_W_MM / PDF_BADGE_H_MM;
+  const targetRatio = metrics.badgeW / metrics.badgeH;
   const sourceRatio = image.naturalWidth / image.naturalHeight;
   let sourceX = 0;
   let sourceY = 0;
@@ -322,8 +388,12 @@ function splitPdfNameIntoTwoLines(text, context, fontFamily) {
   return [best.first, best.second];
 }
 
-function fitPdfName(context, name, fontFamily, maxWidth, maxHeight) {
-  for (let size = 97; size >= 40; size -= 2) {
+function fitPdfName(context, name, fontFamily, maxWidth, maxHeight, metrics) {
+  const startSize = Math.max(28, Math.round(metrics.badgeHPx * 0.182));
+  const minSingleSize = Math.max(14, Math.round(metrics.badgeHPx * 0.075));
+  const singleStep = Math.max(1, Math.round(startSize / 48));
+
+  for (let size = startSize; size >= minSingleSize; size -= singleStep) {
     context.font = "900 " + size + "px " + fontFamily;
     if (context.measureText(name).width <= maxWidth) {
       return { lines: [name], size };
@@ -331,7 +401,15 @@ function fitPdfName(context, name, fontFamily, maxWidth, maxHeight) {
   }
 
   const lines = splitPdfNameIntoTwoLines(name, context, fontFamily);
-  for (let size = 64; size >= 28; size -= 1) {
+  const twoLineStart = Math.max(22, Math.round(metrics.badgeHPx * 0.12));
+  const twoLineMinimum = Math.max(12, Math.round(metrics.badgeHPx * 0.052));
+  const twoLineStep = Math.max(1, Math.round(twoLineStart / 48));
+
+  for (
+    let size = twoLineStart;
+    size >= twoLineMinimum;
+    size -= twoLineStep
+  ) {
     context.font = "900 " + size + "px " + fontFamily;
     const lineHeight = size * 1.08;
     const widthFits = lines.every(
@@ -342,7 +420,7 @@ function fitPdfName(context, name, fontFamily, maxWidth, maxHeight) {
     }
   }
 
-  return { lines, size: 28 };
+  return { lines, size: twoLineMinimum };
 }
 
 function roundedRectPath(context, x, y, width, height, radius) {
@@ -367,11 +445,11 @@ function roundedRectPath(context, x, y, width, height, radius) {
 
 // 透明PNGやPDF透明マスクを使わず、背景の該当部分・黒帯・文字を
 // 小さな不透明JPEGパッチへ合成する。白ボケの原因となる透明度合成を残さない。
-async function renderPdfNamePatch(baseCanvas, name) {
-  const patchX = Math.round(PDF_BADGE_W_PX * 0.05);
-  const patchW = PDF_BADGE_W_PX - patchX * 2;
-  const patchH = Math.round(PDF_BADGE_H_PX * 0.38);
-  const patchY = Math.round((PDF_BADGE_H_PX - patchH) / 2);
+async function renderPdfNamePatch(baseCanvas, name, metrics) {
+  const patchX = Math.round(metrics.badgeWPx * 0.05);
+  const patchW = metrics.badgeWPx - patchX * 2;
+  const patchH = Math.round(metrics.badgeHPx * 0.38);
+  const patchY = Math.round((metrics.badgeHPx - patchH) / 2);
   const { canvas, context } = createOpaqueCanvas(patchW, patchH);
 
   context.drawImage(
@@ -386,7 +464,14 @@ async function renderPdfNamePatch(baseCanvas, name) {
     patchH
   );
 
-  roundedRectPath(context, 0, 0, patchW, patchH, 21);
+  roundedRectPath(
+    context,
+    0,
+    0,
+    patchW,
+    patchH,
+    Math.max(6, Math.round(metrics.badgeHPx * 0.04))
+  );
   context.fillStyle =
     "rgba(0, 0, 0, " + Number(el.overlayOpacity.value) + ")";
   context.fill();
@@ -397,7 +482,8 @@ async function renderPdfNamePatch(baseCanvas, name) {
     name,
     fontFamily,
     patchW * 0.90,
-    patchH * 0.82
+    patchH * 0.82,
+    metrics
   );
 
   context.font = "900 " + fitted.size + "px " + fontFamily;
@@ -423,15 +509,15 @@ async function renderPdfNamePatch(baseCanvas, name) {
 
   return {
     bytes,
-    xRatio: patchX / PDF_BADGE_W_PX,
-    yRatio: patchY / PDF_BADGE_H_PX,
-    widthRatio: patchW / PDF_BADGE_W_PX,
-    heightRatio: patchH / PDF_BADGE_H_PX,
+    xRatio: patchX / metrics.badgeWPx,
+    yRatio: patchY / metrics.badgeHPx,
+    widthRatio: patchW / metrics.badgeWPx,
+    heightRatio: patchH / metrics.badgeHPx,
   };
 }
 function drawCutGuides(pdf, metrics) {
   const totalPages = pdf.getNumberOfPages();
-  const guideLength = 8;
+  const guideLength = GUIDE_LENGTH_MM;
 
   for (let pageNo = 1; pageNo <= totalPages; pageNo++) {
     pdf.setPage(pageNo);
@@ -443,12 +529,11 @@ function drawCutGuides(pdf, metrics) {
     const right = left + metrics.usedW;
     const top = metrics.marginY;
     const bottom = top + metrics.usedH;
-    const verticalCuts = [left, left + metrics.badgeW, right];
-
-    verticalCuts.forEach((cutX) => {
+    for (let col = 0; col <= metrics.cols; col++) {
+      const cutX = left + col * metrics.badgeW;
       pdf.line(cutX, top - guideLength, cutX, top);
       pdf.line(cutX, bottom, cutX, bottom + guideLength);
-    });
+    }
 
     for (let row = 0; row <= metrics.rows; row++) {
       const cutY = top + row * metrics.badgeH;
@@ -484,19 +569,9 @@ async function exportPdf() {
       precision: 12,
     });
 
-    const metrics = {
-      badgeW: PDF_BADGE_W_MM,
-      badgeH: PDF_BADGE_H_MM,
-      cols: 2,
-      rows: 6,
-    };
-    metrics.perPage = metrics.cols * metrics.rows;
-    metrics.usedW = metrics.cols * metrics.badgeW;
-    metrics.usedH = metrics.rows * metrics.badgeH;
-    metrics.marginX = (210 - metrics.usedW) / 2;
-    metrics.marginY = (297 - metrics.usedH) / 2;
+    const metrics = getPrintMetrics();
 
-    const background = await preparePdfBackground();
+    const background = await preparePdfBackground(metrics);
 
     for (let index = 0; index < state.names.length; index++) {
       if (index > 0 && index % metrics.perPage === 0) {
@@ -523,7 +598,8 @@ async function exportPdf() {
 
       const namePatch = await renderPdfNamePatch(
         background.canvas,
-        state.names[index]
+        state.names[index],
+        metrics
       );
       pdf.addImage(
         namePatch.bytes,
@@ -550,7 +626,9 @@ async function exportPdf() {
 
     pdf.setProperties({
       title: "イベント名札 印刷用PDF",
-      subject: "80mm x 45mm / A4 / 2列 x 6行 / 300dpi相当",
+      subject:
+        `${metrics.badgeW}mm x ${metrics.badgeH}mm / A4 / ` +
+        `${metrics.cols}列 x ${metrics.rows}行 / 300dpi相当`,
       creator: "名札PDFジェネレーター",
     });
     pdf.save("name-badges-a4-print.pdf");
@@ -563,7 +641,11 @@ async function exportPdf() {
     setStatus("PDF生成エラー: " + error.message, "error");
   } finally {
     el.renderArea.replaceChildren();
-    el.pdfButton.disabled = !(state.names.length && state.backgroundDataUrl);
+    el.pdfButton.disabled = !(
+      state.names.length &&
+      state.backgroundDataUrl &&
+      updateSizeSettings()
+    );
     el.pdfButton.textContent = originalText;
   }
 }
@@ -586,6 +668,12 @@ el.overlayOpacity.addEventListener("input", () => {
   el.opacityValue.textContent = `${Math.round(Number(el.overlayOpacity.value) * 100)}%`;
   refreshStyles();
 });
+function handleSizeInput() {
+  updateReadyState();
+  renderPreview();
+}
+el.badgeWidth.addEventListener("input", handleSizeInput);
+el.badgeHeight.addEventListener("input", handleSizeInput);
 el.pdfButton.addEventListener("click", exportPdf);
 el.clearButton.addEventListener("click", clearAll);
 

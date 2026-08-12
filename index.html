@@ -13,7 +13,7 @@
   <header class="hero">
     <div>
       <h1>名札ジェネレーター</h1>
-      <p>参加者CSVと背景画像から、80mm × 45mm の名札を作成し、A4印刷用PDFに出力します。</p>
+      <p>参加者CSVと背景画像から、サイズを指定した名札を作成し、A4印刷用PDFに出力します。</p>
     </div>
   </header>
 
@@ -30,7 +30,7 @@
       <label class="field">
         <span>背景画像</span>
         <input id="bgFile" type="file" accept="image/*" />
-        <small>16:9推奨。PNG / JPG対応。名札全面にトリミングして配置します。</small>
+        <small>PNG / JPG対応。指定した名札の縦横比に合わせて中央トリミングします。</small>
       </label>
 
       <div class="two-columns">
@@ -68,6 +68,22 @@
             <output id="opacityValue">55%</output>
           </div>
         </label>
+      </div>
+
+      <div class="size-settings">
+        <span class="size-settings-title">印刷時の名札サイズ</span>
+        <div class="two-columns">
+          <label class="field">
+            <span>横幅（mm）</span>
+            <input id="badgeWidth" type="number" min="20" max="194" step="0.1" value="80" inputmode="decimal" />
+          </label>
+
+          <label class="field">
+            <span>縦幅（mm）</span>
+            <input id="badgeHeight" type="number" min="20" max="281" step="0.1" value="45" inputmode="decimal" />
+          </label>
+        </div>
+        <small id="layoutSummary">A4縦に2列 × 6行（最大12枚）で配置します。</small>
       </div>
 
       <div class="actions">
