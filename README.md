@@ -1,6 +1,6 @@
 # 名札PDFジェネレーター
 
-GitHub Pagesで公開できる、完全クライアントサイドの名札作成Webアプリです。
+イベント主催、オフ会主催向けのクライアントサイドの名札作成Webアプリです。
 
 ## 主な機能
 
@@ -25,17 +25,8 @@ John Smith
 佐藤 花子
 ```
 
-認識する列名:
+名前として認識する列名:
 `name`, `Name`, `NAME`, `名前`, `氏名`, `参加者名`
-
-## GitHub Pagesで公開
-
-1. GitHubでリポジトリを作成
-2. このフォルダのファイルをリポジトリ直下に配置
-3. `Settings` → `Pages`
-4. Source: `Deploy from a branch`
-5. Branch: `main` / Folder: `/(root)`
-6. Save
 
 ## PDFレイアウト
 
